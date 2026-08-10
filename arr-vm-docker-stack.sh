@@ -22,6 +22,7 @@ VM_IP_MODE="${VM_IP_MODE:-dhcp}"
 VM_IP="${VM_IP:-}"
 VM_GATEWAY="${VM_GATEWAY:-}"
 VM_CIDR="${VM_CIDR:-24}"
+ARR_TZ="${ARR_TZ:-America/Sao_Paulo}"
 
 SSH_CONNECT_IP=""
 
@@ -48,6 +49,7 @@ Environment overrides:
   VM_IP=192.168.1.50
   VM_GATEWAY=192.168.1.1
   VM_CIDR=24
+  ARR_TZ=America/Sao_Paulo
   IMAGE_URL=${IMAGE_URL}
 EOF
 }
@@ -114,6 +116,9 @@ collect_inputs() {
   VM_MEMORY="$(prompt_default "Memory in MB" "$VM_MEMORY")"
   VM_DISK_SIZE="$(prompt_default "Disk size" "$VM_DISK_SIZE")"
   VM_USER="$(prompt_default "Cloud-init user" "$VM_USER")"
+  [[ "$VM_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "Invalid Linux user name: ${VM_USER}"
+  ARR_TZ="$(prompt_default "Timezone for containers" "$ARR_TZ")"
+  [[ "$ARR_TZ" =~ ^[A-Za-z0-9_./+-]+$ ]] || die "Invalid timezone: ${ARR_TZ}"
 
   if [[ -z "$VM_PASSWORD" ]]; then
     VM_PASSWORD="$(prompt_secret "Cloud-init password for ${VM_USER}")"
@@ -225,6 +230,185 @@ start_vm() {
   qm start "$VMID"
 }
 
+ssh_base() {
+  ssh \
+    -i "$PROVISION_KEY" \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new \
+    -o UserKnownHostsFile="${WORK_DIR}/known_hosts" \
+    -o ConnectTimeout=5 \
+    "${VM_USER}@${SSH_CONNECT_IP}" "$@"
+}
+
+wait_for_ssh() {
+  msg "Waiting for SSH on ${SSH_CONNECT_IP}"
+  local elapsed=0
+  local timeout=600
+  until ssh_base "true" >/dev/null 2>&1; do
+    sleep 5
+    elapsed=$((elapsed + 5))
+    if ((elapsed >= timeout)); then
+      die "Timed out waiting for SSH on ${SSH_CONNECT_IP}."
+    fi
+  done
+  ok "SSH is ready"
+}
+
+bootstrap_arr_stack() {
+  msg "Bootstrapping Docker and ARR stack inside the VM"
+  ssh_base "sudo env ARR_ADMIN_USER='${VM_USER}' ARR_TZ='${ARR_TZ}' bash -s" <<'REMOTE_BOOTSTRAP'
+set -eEo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+if command -v cloud-init >/dev/null 2>&1; then
+  cloud-init status --wait >/dev/null || true
+fi
+
+apt-get update
+apt-get install -y ca-certificates curl qemu-guest-agent
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+
+cat >/etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/debian
+Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker qemu-guest-agent
+usermod -aG docker "$ARR_ADMIN_USER"
+
+ARR_UID="$(id -u "$ARR_ADMIN_USER")"
+ARR_GID="$(id -g "$ARR_ADMIN_USER")"
+
+install -d -m 0755 -o "$ARR_ADMIN_USER" -g "$ARR_ADMIN_USER" \
+  /opt/arr \
+  /data/downloads/complete \
+  /data/downloads/incomplete \
+  /data/media/movies \
+  /data/media/tv \
+  /data/media/music \
+  /data/configs/prowlarr \
+  /data/configs/sonarr \
+  /data/configs/radarr \
+  /data/configs/lidarr \
+  /data/configs/bazarr \
+  /data/configs/qbittorrent
+
+cat >/opt/arr/.env <<EOF
+PUID=${ARR_UID}
+PGID=${ARR_GID}
+TZ=${ARR_TZ}
+EOF
+
+cat >/opt/arr/compose.yaml <<'EOF'
+services:
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - /data/configs/prowlarr:/config
+    ports:
+      - "9696:9696"
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - /data/configs/sonarr:/config
+      - /data/media/tv:/tv
+      - /data/downloads:/downloads
+    ports:
+      - "8989:8989"
+    restart: unless-stopped
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - /data/configs/radarr:/config
+      - /data/media/movies:/movies
+      - /data/downloads:/downloads
+    ports:
+      - "7878:7878"
+    restart: unless-stopped
+
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - /data/configs/lidarr:/config
+      - /data/media/music:/music
+      - /data/downloads:/downloads
+    ports:
+      - "8686:8686"
+    restart: unless-stopped
+
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - /data/configs/bazarr:/config
+      - /data/media/movies:/movies
+      - /data/media/tv:/tv
+    ports:
+      - "6767:6767"
+    restart: unless-stopped
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - WEBUI_PORT=8090
+    volumes:
+      - /data/configs/qbittorrent:/config
+      - /data/downloads:/downloads
+    ports:
+      - "8090:8090"
+      - "6881:6881"
+      - "6881:6881/udp"
+    restart: unless-stopped
+EOF
+
+chown -R "$ARR_ADMIN_USER:$ARR_ADMIN_USER" /opt/arr /data
+sudo -u "$ARR_ADMIN_USER" docker compose --env-file /opt/arr/.env -f /opt/arr/compose.yaml pull
+sudo -u "$ARR_ADMIN_USER" docker compose --env-file /opt/arr/.env -f /opt/arr/compose.yaml up -d
+sudo -u "$ARR_ADMIN_USER" docker compose --env-file /opt/arr/.env -f /opt/arr/compose.yaml ps
+REMOTE_BOOTSTRAP
+  ok "ARR stack bootstrapped"
+}
+
 write_summary() {
   cat >"$SUMMARY_FILE" <<EOF
 ARR VM Docker Stack
@@ -236,6 +420,21 @@ IP: ${SSH_CONNECT_IP}
 Storage: ${VM_STORAGE}
 Bridge: ${VM_BRIDGE}
 Provision key: ${PROVISION_KEY}
+
+Service URLs:
+  Prowlarr:     http://${SSH_CONNECT_IP}:9696
+  Sonarr:       http://${SSH_CONNECT_IP}:8989
+  Radarr:       http://${SSH_CONNECT_IP}:7878
+  Lidarr:       http://${SSH_CONNECT_IP}:8686
+  Bazarr:       http://${SSH_CONNECT_IP}:6767
+  qBittorrent:  http://${SSH_CONNECT_IP}:8090
+
+Files inside VM:
+  Compose: /opt/arr/compose.yaml
+  Env:     /opt/arr/.env
+  Configs: /data/configs
+  Media:   /data/media
+  Downloads: /data/downloads
 EOF
   ok "Summary written to ${SUMMARY_FILE}"
 }
@@ -249,6 +448,8 @@ main() {
   ensure_provision_key
   create_vm
   start_vm
+  wait_for_ssh
+  bootstrap_arr_stack
   write_summary
 }
 
