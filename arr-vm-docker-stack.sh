@@ -85,7 +85,7 @@ require_commands() {
 }
 
 ensure_ui() {
-  [[ -t 0 && -t 1 ]] || return 0
+  [[ -t 0 && -t 2 ]] || return 0
 
   if command -v whiptail >/dev/null 2>&1; then
     UI_BIN="$(command -v whiptail)"
@@ -126,7 +126,7 @@ prompt_secret() {
 }
 
 use_ui() {
-  [[ -n "$UI_BIN" && -t 0 && -t 1 ]]
+  [[ -n "$UI_BIN" && -t 0 && -t 2 ]]
 }
 
 ui_input() {
