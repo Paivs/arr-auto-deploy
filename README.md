@@ -51,6 +51,11 @@ Execute no node Proxmox:
 sudo ./arr-vm-docker-stack.sh
 ```
 
+Quando `whiptail` estiver disponivel, o script abre um menu interativo azul.
+Use as setas para navegar nas listas, espaco para marcar opcoes, Tab para
+alternar botoes e Enter para confirmar. Se `whiptail` nao existir, o script cai
+para prompts textuais simples.
+
 O script:
 
 1. Valida comandos Proxmox e dependencias locais.
