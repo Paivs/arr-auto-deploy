@@ -523,10 +523,14 @@ if command -v cloud-init >/dev/null 2>&1; then
   cloud-init status --wait >/dev/null || true
 fi
 
-apt-get update
-apt-get install -y ca-certificates curl qemu-guest-agent
+cat >/etc/apt/apt.conf.d/99force-ipv4 <<'EOF'
+Acquire::ForceIPv4 "true";
+EOF
+
+apt-get -o Acquire::ForceIPv4=true update
+apt-get -o Acquire::ForceIPv4=true install -y ca-certificates curl qemu-guest-agent
 install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+curl -4 -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
 
 cat >/etc/apt/sources.list.d/docker.sources <<EOF
@@ -538,8 +542,8 @@ Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 
-apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+apt-get -o Acquire::ForceIPv4=true update
+apt-get -o Acquire::ForceIPv4=true install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable --now docker qemu-guest-agent
 usermod -aG docker "$ARR_ADMIN_USER"
 
