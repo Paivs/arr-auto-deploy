@@ -8,7 +8,7 @@ IMAGE_URL="${IMAGE_URL:-https://cloud.debian.org/images/cloud/trixie/latest/debi
 IMAGE_FILE="${IMAGE_FILE:-${WORK_DIR}/debian-13-generic-amd64.qcow2}"
 PROVISION_KEY="${PROVISION_KEY:-${WORK_DIR}/arr-vm-provision}"
 SUMMARY_FILE="${SUMMARY_FILE:-${WORK_DIR}/summary.txt}"
-BACKTITLE="${BACKTITLE:-ARR VM Docker Stack}"
+BACKTITLE="${BACKTITLE:-Proxmox VE Helper Scripts - ARR VM Docker Stack}"
 
 ACTION="${ACTION:-full}"
 VMID="${VMID:-}"
@@ -34,6 +34,18 @@ ok() { printf '\033[1;32m[OK]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[WARN]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[ERR]\033[0m %s\n' "$*" >&2; exit 1; }
 cancelled() { die "Cancelled at ${1}."; }
+
+header_info() {
+  clear
+  cat <<"EOF"
+                         _      __     __ __  __
+   __ _ _ __ _ __       / \     \ \   / /|  \/  |
+  / _` | '__| '__|____ / _ \ ____\ \ / / | |\/| |
+ | (_| | |  | | |_____/ ___ \_____\ V /  | |  | |
+  \__,_|_|  |_|      /_/   \_\     \_/   |_|  |_|
+
+EOF
+}
 
 usage() {
   cat <<EOF
@@ -122,7 +134,7 @@ ui_input() {
   if use_ui; then
     "$UI_BIN" --backtitle "$BACKTITLE" \
       --title "$title" \
-      --inputbox "$prompt" 10 74 "$default" \
+      --inputbox "$prompt" 10 70 "$default" \
       3>&1 1>&2 2>&3 || cancelled "$title"
   else
     prompt_default "$prompt" "$default"
@@ -134,7 +146,7 @@ ui_password() {
   if use_ui; then
     "$UI_BIN" --backtitle "$BACKTITLE" \
       --title "$title" \
-      --passwordbox "$prompt" 10 74 \
+      --passwordbox "$prompt" 10 70 \
       3>&1 1>&2 2>&3 || cancelled "$title"
   else
     prompt_secret "$prompt"
@@ -148,7 +160,7 @@ ui_menu() {
     "$UI_BIN" --backtitle "$BACKTITLE" \
       --title "$title" \
       --default-item "$default" \
-      --menu "$prompt" 18 76 9 "$@" \
+      --menu "$prompt" 16 70 8 "$@" \
       3>&1 1>&2 2>&3 || cancelled "$title"
   else
     local tag desc
@@ -163,28 +175,27 @@ ui_menu() {
   fi
 }
 
-ui_radiolist() {
-  local title=$1 prompt=$2 default=$3
-  shift 3
-  local items=("$@")
-  local options=()
-  local tag desc state
-  while (($# > 0)); do
-    tag=$1
-    desc=$2
-    shift 2
-    state=OFF
-    [[ "$tag" == "$default" ]] && state=ON
-    options+=("$tag" "$desc" "$state")
-  done
-
+ui_msgbox() {
+  local title=$1 message=$2
   if use_ui; then
     "$UI_BIN" --backtitle "$BACKTITLE" \
       --title "$title" \
-      --radiolist "$prompt" 16 76 6 "${options[@]}" \
-      3>&1 1>&2 2>&3 || cancelled "$title"
+      --msgbox "$message" 12 70 || cancelled "$title"
   else
-    ui_menu "$title" "$prompt" "$default" "${items[@]}"
+    printf '%s\n\n%s\n' "$title" "$message" >&2
+  fi
+}
+
+ui_confirm() {
+  local title=$1 message=$2
+  if use_ui; then
+    "$UI_BIN" --backtitle "$BACKTITLE" \
+      --title "$title" \
+      --yesno "$message" 22 78 || cancelled "$title"
+  else
+    local value
+    read -r -p "${message} [y/N]: " value
+    [[ "$value" =~ ^[Yy]$ ]] || cancelled "$title"
   fi
 }
 
@@ -200,26 +211,67 @@ bridge_options() {
   awk '/^iface vmbr/ {print $2}' /etc/network/interfaces 2>/dev/null
 }
 
+confirm_configuration() {
+  local body
+  if [[ "$ACTION" == "bootstrap" ]]; then
+    body=$(cat <<EOF
+Mode:      bootstrap
+VMID:      ${VMID}
+User:      ${VM_USER}
+IP:        ${SSH_CONNECT_IP}
+Timezone:  ${ARR_TZ}
+
+The script will connect to the existing VM and resume Docker/ARR provisioning.
+EOF
+)
+  else
+    body=$(cat <<EOF
+Mode:      full
+VMID:      ${VMID}
+Name:      ${VM_NAME}
+CPU:       ${VM_CORES} cores
+Memory:    ${VM_MEMORY} MB
+Disk:      ${VM_DISK_SIZE}
+Storage:   ${VM_STORAGE}
+Bridge:    ${VM_BRIDGE}
+Network:   ${VM_IP_MODE}
+IP:        ${SSH_CONNECT_IP}
+User:      ${VM_USER}
+Timezone:  ${ARR_TZ}
+
+The script will create the VM, start it, and install the Docker ARR stack.
+EOF
+)
+  fi
+
+  ui_confirm "Confirm Settings" "$body"
+}
+
 collect_inputs() {
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
     exit 0
   fi
 
+  ui_msgbox "ARR VM Docker Stack" \
+    "This script creates or bootstraps a Debian VM for the ARR stack.
+
+Use the arrow keys to move, Space to select, Tab to switch buttons, and Enter to confirm."
+
   local default_vmid
   default_vmid="$(next_vmid)"
-  ACTION="$(ui_radiolist \
-    "Modo de Execucao" \
-    "Escolha com as setas, marque com espaco e confirme com Enter." \
+  ACTION="$(ui_menu \
+    "Execution Mode" \
+    "Choose the operation to run:" \
     "$ACTION" \
-    "full" "Criar VM e instalar o stack" \
-    "bootstrap" "Retomar bootstrap em uma VM existente")"
+    "full" "Create VM and install the stack" \
+    "bootstrap" "Resume bootstrap on an existing VM")"
   case "$ACTION" in
     full|bootstrap) ;;
     *) die "Action must be full or bootstrap." ;;
   esac
 
-  VMID="$(ui_input "VMID" "ID da VM no Proxmox." "${VMID:-$default_vmid}")"
+  VMID="$(ui_input "Virtual Machine ID" "Set the VMID to use in Proxmox VE:" "${VMID:-$default_vmid}")"
   [[ "$VMID" =~ ^[0-9]+$ ]] || die "VMID must be numeric."
   local vm_exists=0
   qm status "$VMID" >/dev/null 2>&1 && vm_exists=1
@@ -230,24 +282,25 @@ collect_inputs() {
     die "VMID ${VMID} does not exist. Use ACTION=full to create it."
   fi
 
-  VM_USER="$(ui_input "Usuario" "Usuario cloud-init usado para SSH/provisionamento." "$VM_USER")"
+  VM_USER="$(ui_input "Cloud-Init User" "Set the VM user used for SSH provisioning:" "$VM_USER")"
   [[ "$VM_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "Invalid Linux user name: ${VM_USER}"
-  ARR_TZ="$(ui_input "Timezone" "Timezone dos containers." "$ARR_TZ")"
+  ARR_TZ="$(ui_input "Timezone" "Set the timezone for the containers:" "$ARR_TZ")"
   [[ "$ARR_TZ" =~ ^[A-Za-z0-9_./+-]+$ ]] || die "Invalid timezone: ${ARR_TZ}"
 
   if [[ "$ACTION" == "bootstrap" ]]; then
-    SSH_CONNECT_IP="$(ui_input "IP da VM" "IP da VM existente para conexao SSH." "${VM_IP:-}")"
+    SSH_CONNECT_IP="$(ui_input "VM IP Address" "Set the existing VM IP address for SSH provisioning:" "${VM_IP:-}")"
     is_valid_ipv4 "$SSH_CONNECT_IP" || die "Invalid VM IP: ${SSH_CONNECT_IP}"
+    confirm_configuration
     return
   fi
 
-  VM_NAME="$(ui_input "Nome da VM" "Nome exibido no Proxmox." "$VM_NAME")"
-  VM_CORES="$(ui_input "CPU" "Quantidade de vCPU." "$VM_CORES")"
-  VM_MEMORY="$(ui_input "Memoria" "Memoria RAM em MB." "$VM_MEMORY")"
-  VM_DISK_SIZE="$(ui_input "Disco" "Tamanho final do disco da VM." "$VM_DISK_SIZE")"
+  VM_NAME="$(ui_input "VM Name" "Set the VM name shown in Proxmox VE:" "$VM_NAME")"
+  VM_CORES="$(ui_input "CPU Cores" "Set the number of vCPU cores:" "$VM_CORES")"
+  VM_MEMORY="$(ui_input "Memory" "Set memory in MB:" "$VM_MEMORY")"
+  VM_DISK_SIZE="$(ui_input "Disk Size" "Set the final VM disk size:" "$VM_DISK_SIZE")"
 
   if [[ -z "$VM_PASSWORD" ]]; then
-    VM_PASSWORD="$(ui_password "Senha" "Senha cloud-init para ${VM_USER}.")"
+    VM_PASSWORD="$(ui_password "Cloud-Init Password" "Set the cloud-init password for ${VM_USER}:")"
   fi
   [[ -n "$VM_PASSWORD" ]] || die "Password cannot be empty."
 
@@ -261,7 +314,7 @@ collect_inputs() {
       storage_items+=("$storage" "VM disk images")
     done < <(storage_options)
     ((${#storage_items[@]} > 0)) || die "No storage with content 'images' available."
-    VM_STORAGE="$(ui_menu "Storage" "Escolha o storage para o disco da VM." "$storage_default" "${storage_items[@]}")"
+    VM_STORAGE="$(ui_menu "VM Storage" "Pick a PVE storage for the VM disk:" "$storage_default" "${storage_items[@]}")"
   fi
   [[ -n "$VM_STORAGE" ]] || die "No storage selected."
 
@@ -272,27 +325,27 @@ collect_inputs() {
     bridge_items+=("$bridge" "Linux bridge")
   done < <(bridge_options)
   if ((${#bridge_items[@]} > 0)); then
-    VM_BRIDGE="$(ui_menu "Bridge" "Escolha a bridge de rede da VM." "$VM_BRIDGE" "${bridge_items[@]}")"
+    VM_BRIDGE="$(ui_menu "Network Bridge" "Pick the Linux bridge for the VM:" "$VM_BRIDGE" "${bridge_items[@]}")"
   else
-    VM_BRIDGE="$(ui_input "Bridge" "Bridge de rede da VM." "$VM_BRIDGE")"
+    VM_BRIDGE="$(ui_input "Network Bridge" "Set the Linux bridge for the VM:" "$VM_BRIDGE")"
   fi
   [[ -n "$VM_BRIDGE" ]] || die "Bridge cannot be empty."
 
-  VM_IP_MODE="$(ui_radiolist \
-    "Rede" \
-    "Escolha como configurar o IPv4 da VM." \
+  VM_IP_MODE="$(ui_menu \
+    "Network Mode" \
+    "Choose how to configure the VM IPv4 address:" \
     "$VM_IP_MODE" \
-    "dhcp" "Usar DHCP e informar o IP reservado" \
-    "static" "Configurar IP estatico via cloud-init")"
+    "dhcp" "Use DHCP and provide the reserved IP" \
+    "static" "Configure static IP via cloud-init")"
   case "$VM_IP_MODE" in
     dhcp)
-      SSH_CONNECT_IP="$(ui_input "IP DHCP Reservado" "IP reservado no roteador/DHCP para finalizar via SSH." "${VM_IP:-}")"
+      SSH_CONNECT_IP="$(ui_input "Reserved DHCP IP" "Enter the DHCP-reserved VM IP used for SSH provisioning:" "${VM_IP:-}")"
       [[ -n "$SSH_CONNECT_IP" ]] || die "For DHCP, provide the reserved IP so the script can finish provisioning."
       ;;
     static)
-      VM_IP="$(ui_input "IP Estatico" "IPv4 estatico da VM." "$VM_IP")"
-      VM_GATEWAY="$(ui_input "Gateway" "Gateway IPv4 da rede." "$VM_GATEWAY")"
-      VM_CIDR="$(ui_input "CIDR" "Mascara CIDR, exemplo: 24." "$VM_CIDR")"
+      VM_IP="$(ui_input "Static IP" "Enter the static VM IPv4 address:" "$VM_IP")"
+      VM_GATEWAY="$(ui_input "Gateway" "Enter the IPv4 gateway:" "$VM_GATEWAY")"
+      VM_CIDR="$(ui_input "CIDR Mask" "Enter the network mask, for example 24:" "$VM_CIDR")"
       is_valid_ipv4 "$VM_IP" || die "Invalid static IP: ${VM_IP}"
       is_valid_ipv4 "$VM_GATEWAY" || die "Invalid gateway: ${VM_GATEWAY}"
       [[ "$VM_CIDR" =~ ^[0-9]+$ ]] && ((VM_CIDR >= 1 && VM_CIDR <= 32)) || die "Invalid CIDR: ${VM_CIDR}"
@@ -302,6 +355,8 @@ collect_inputs() {
       die "Network mode must be dhcp or static."
       ;;
   esac
+
+  confirm_configuration
 }
 
 ensure_workdir() {
@@ -620,6 +675,7 @@ main() {
   require_root
   require_commands
   ensure_ui
+  header_info
   collect_inputs "$@"
   ensure_workdir
   ensure_provision_key
