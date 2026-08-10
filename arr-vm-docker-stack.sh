@@ -221,6 +221,7 @@ Mode:      bootstrap
 VMID:      ${VMID}
 User:      ${VM_USER}
 IP:        ${SSH_CONNECT_IP}
+Gateway:   ${VM_GATEWAY:-not set}
 Timezone:  ${ARR_TZ}
 
 The script will connect to the existing VM and resume Docker/ARR provisioning.
@@ -292,6 +293,12 @@ Use the arrow keys to move, Space to select, Tab to switch buttons, and Enter to
   if [[ "$ACTION" == "bootstrap" ]]; then
     SSH_CONNECT_IP="$(ui_input "VM IP Address" "Set the existing VM IP address for SSH provisioning:" "${VM_IP:-}")"
     is_valid_ipv4 "$SSH_CONNECT_IP" || die "Invalid VM IP: ${SSH_CONNECT_IP}"
+    if [[ -z "$VM_GATEWAY" ]]; then
+      VM_GATEWAY="$(ui_input "Gateway" "Optional IPv4 gateway to repair missing default route. Leave blank to skip:" "$VM_GATEWAY")"
+    fi
+    if [[ -n "$VM_GATEWAY" ]]; then
+      is_valid_ipv4 "$VM_GATEWAY" || die "Invalid gateway: ${VM_GATEWAY}"
+    fi
     confirm_configuration
     return
   fi
@@ -350,6 +357,7 @@ Use the arrow keys to move, Space to select, Tab to switch buttons, and Enter to
       VM_CIDR="$(ui_input "CIDR Mask" "Enter the network mask, for example 24:" "$VM_CIDR")"
       is_valid_ipv4 "$VM_IP" || die "Invalid static IP: ${VM_IP}"
       is_valid_ipv4 "$VM_GATEWAY" || die "Invalid gateway: ${VM_GATEWAY}"
+      [[ "$VM_GATEWAY" != "$VM_IP" ]] || die "Gateway cannot be the same as the VM IP."
       [[ "$VM_CIDR" =~ ^[0-9]+$ ]] && ((VM_CIDR >= 1 && VM_CIDR <= 32)) || die "Invalid CIDR: ${VM_CIDR}"
       SSH_CONNECT_IP="$VM_IP"
       ;;
@@ -514,7 +522,7 @@ wait_for_ssh() {
 
 bootstrap_arr_stack() {
   msg "Bootstrapping Docker and ARR stack inside the VM"
-  ssh_base "sudo env ARR_ADMIN_USER='${VM_USER}' ARR_TZ='${ARR_TZ}' bash -s" <<'REMOTE_BOOTSTRAP'
+  ssh_base "sudo env ARR_ADMIN_USER='${VM_USER}' ARR_TZ='${ARR_TZ}' ARR_GATEWAY='${VM_GATEWAY}' bash -s" <<'REMOTE_BOOTSTRAP'
 set -eEo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
@@ -526,6 +534,29 @@ fi
 cat >/etc/apt/apt.conf.d/99force-ipv4 <<'EOF'
 Acquire::ForceIPv4 "true";
 EOF
+
+if [[ -n "${ARR_GATEWAY:-}" ]]; then
+  default_dev="$(ip -o -4 addr show scope global | awk '{print $2; exit}')"
+  if [[ -n "$default_dev" ]]; then
+    ip route replace default via "$ARR_GATEWAY" dev "$default_dev"
+  fi
+fi
+
+if ! ip route get 1.1.1.1 >/dev/null 2>&1; then
+  echo "VM network cannot reach the internet over IPv4." >&2
+  echo >&2
+  echo "ip -4 addr:" >&2
+  ip -4 addr >&2 || true
+  echo >&2
+  echo "ip route:" >&2
+  ip route >&2 || true
+  echo >&2
+  echo "DNS test:" >&2
+  getent ahostsv4 deb.debian.org >&2 || true
+  echo >&2
+  echo "Fix the VM default gateway, Proxmox bridge/VLAN, router firewall, or pass VM_GATEWAY=<gateway> when resuming bootstrap." >&2
+  exit 1
+fi
 
 if grep -Rqs 'mirror+file:' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
   find /etc/apt/sources.list.d -type f \( -name '*.sources' -o -name '*.list' \) -print0 \
