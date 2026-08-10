@@ -9,6 +9,7 @@ IMAGE_FILE="${IMAGE_FILE:-${WORK_DIR}/debian-13-generic-amd64.qcow2}"
 PROVISION_KEY="${PROVISION_KEY:-${WORK_DIR}/arr-vm-provision}"
 SUMMARY_FILE="${SUMMARY_FILE:-${WORK_DIR}/summary.txt}"
 
+ACTION="${ACTION:-full}"
 VMID="${VMID:-}"
 VM_NAME="${VM_NAME:-arr-docker}"
 VM_STORAGE="${VM_STORAGE:-}"
@@ -36,6 +37,7 @@ usage() {
 Usage: sudo ./${SCRIPT_NAME}
 
 Environment overrides:
+  ACTION=full|bootstrap
   VMID=120
   VM_NAME=arr-docker
   VM_STORAGE=local-lvm
@@ -107,18 +109,38 @@ collect_inputs() {
 
   local default_vmid
   default_vmid="$(next_vmid)"
+  ACTION="$(prompt_default "Action: full or bootstrap" "$ACTION")"
+  case "$ACTION" in
+    full|bootstrap) ;;
+    *) die "Action must be full or bootstrap." ;;
+  esac
+
   VMID="$(prompt_default "VMID" "${VMID:-$default_vmid}")"
   [[ "$VMID" =~ ^[0-9]+$ ]] || die "VMID must be numeric."
-  qm status "$VMID" >/dev/null 2>&1 && die "VMID ${VMID} already exists."
+  local vm_exists=0
+  qm status "$VMID" >/dev/null 2>&1 && vm_exists=1
+  if [[ "$ACTION" == "full" && "$vm_exists" -eq 1 ]]; then
+    die "VMID ${VMID} already exists. Use ACTION=bootstrap to resume provisioning."
+  fi
+  if [[ "$ACTION" == "bootstrap" && "$vm_exists" -eq 0 ]]; then
+    die "VMID ${VMID} does not exist. Use ACTION=full to create it."
+  fi
+
+  VM_USER="$(prompt_default "Cloud-init user" "$VM_USER")"
+  [[ "$VM_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "Invalid Linux user name: ${VM_USER}"
+  ARR_TZ="$(prompt_default "Timezone for containers" "$ARR_TZ")"
+  [[ "$ARR_TZ" =~ ^[A-Za-z0-9_./+-]+$ ]] || die "Invalid timezone: ${ARR_TZ}"
+
+  if [[ "$ACTION" == "bootstrap" ]]; then
+    SSH_CONNECT_IP="$(prompt_default "VM IP to provision over SSH" "${VM_IP:-}")"
+    is_valid_ipv4 "$SSH_CONNECT_IP" || die "Invalid VM IP: ${SSH_CONNECT_IP}"
+    return
+  fi
 
   VM_NAME="$(prompt_default "VM name" "$VM_NAME")"
   VM_CORES="$(prompt_default "CPU cores" "$VM_CORES")"
   VM_MEMORY="$(prompt_default "Memory in MB" "$VM_MEMORY")"
   VM_DISK_SIZE="$(prompt_default "Disk size" "$VM_DISK_SIZE")"
-  VM_USER="$(prompt_default "Cloud-init user" "$VM_USER")"
-  [[ "$VM_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "Invalid Linux user name: ${VM_USER}"
-  ARR_TZ="$(prompt_default "Timezone for containers" "$ARR_TZ")"
-  [[ "$ARR_TZ" =~ ^[A-Za-z0-9_./+-]+$ ]] || die "Invalid timezone: ${ARR_TZ}"
 
   if [[ -z "$VM_PASSWORD" ]]; then
     VM_PASSWORD="$(prompt_secret "Cloud-init password for ${VM_USER}")"
@@ -179,6 +201,10 @@ ensure_provision_key() {
   if [[ -s "$PROVISION_KEY" && -s "${PROVISION_KEY}.pub" ]]; then
     ok "Using existing provisioning key: ${PROVISION_KEY}"
     return
+  fi
+
+  if [[ "$ACTION" == "bootstrap" ]]; then
+    die "Provisioning key not found at ${PROVISION_KEY}. Reuse the WORK_DIR from the original run."
   fi
 
   msg "Generating provisioning SSH key"
@@ -402,9 +428,36 @@ services:
 EOF
 
 chown -R "$ARR_ADMIN_USER:$ARR_ADMIN_USER" /opt/arr /data
-sudo -u "$ARR_ADMIN_USER" docker compose --env-file /opt/arr/.env -f /opt/arr/compose.yaml pull
-sudo -u "$ARR_ADMIN_USER" docker compose --env-file /opt/arr/.env -f /opt/arr/compose.yaml up -d
-sudo -u "$ARR_ADMIN_USER" docker compose --env-file /opt/arr/.env -f /opt/arr/compose.yaml ps
+export COMPOSE_PARALLEL_LIMIT=1
+
+compose_as_user() {
+  sudo -u "$ARR_ADMIN_USER" docker compose --env-file /opt/arr/.env -f /opt/arr/compose.yaml "$@"
+}
+
+pull_with_retry() {
+  local service=$1
+  local attempt
+  local delay=10
+  for attempt in 1 2 3 4 5; do
+    if compose_as_user pull "$service"; then
+      return 0
+    fi
+    if [[ "$attempt" == "5" ]]; then
+      break
+    fi
+    echo "Pull failed for ${service}; retry ${attempt}/5 in ${delay}s" >&2
+    sleep "$delay"
+    delay=$((delay * 2))
+  done
+  return 1
+}
+
+for service in prowlarr sonarr radarr lidarr bazarr qbittorrent; do
+  pull_with_retry "$service"
+done
+
+compose_as_user up -d
+compose_as_user ps
 REMOTE_BOOTSTRAP
   ok "ARR stack bootstrapped"
 }
@@ -444,8 +497,16 @@ main() {
   require_commands
   collect_inputs "$@"
   ensure_workdir
-  download_image
   ensure_provision_key
+
+  if [[ "$ACTION" == "bootstrap" ]]; then
+    wait_for_ssh
+    bootstrap_arr_stack
+    write_summary
+    return
+  fi
+
+  download_image
   create_vm
   start_vm
   wait_for_ssh
