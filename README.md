@@ -51,10 +51,11 @@ Execute no node Proxmox:
 sudo ./arr-vm-docker-stack.sh
 ```
 
-Quando `whiptail` estiver disponivel, o script abre um menu interativo azul.
-Use as setas para navegar nas listas, espaco para marcar opcoes, Tab para
-alternar botoes e Enter para confirmar. Se `whiptail` nao existir, o script cai
-para prompts textuais simples.
+O script usa `whiptail` para abrir um menu interativo azul. Se `whiptail` nao
+estiver instalado no host Proxmox, o script tenta instala-lo automaticamente
+antes da primeira pergunta. Use as setas para navegar nas listas, espaco para
+marcar opcoes, Tab para alternar botoes e Enter para confirmar. Se a instalacao
+do `whiptail` nao for possivel, o script cai para prompts textuais simples.
 
 O script:
 

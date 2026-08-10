@@ -27,6 +27,7 @@ VM_CIDR="${VM_CIDR:-24}"
 ARR_TZ="${ARR_TZ:-America/Sao_Paulo}"
 
 SSH_CONNECT_IP=""
+UI_BIN=""
 
 msg() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 ok() { printf '\033[1;32m[OK]\033[0m %s\n' "$*"; }
@@ -71,6 +72,27 @@ require_commands() {
   ((${#missing[@]} == 0)) || die "Missing required commands: ${missing[*]}"
 }
 
+ensure_ui() {
+  [[ -t 0 && -t 1 ]] || return 0
+
+  if command -v whiptail >/dev/null 2>&1; then
+    UI_BIN="$(command -v whiptail)"
+    return 0
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    msg "Installing whiptail for the interactive setup menu"
+    apt-get update
+    apt-get install -y whiptail
+  fi
+
+  if command -v whiptail >/dev/null 2>&1; then
+    UI_BIN="$(command -v whiptail)"
+  else
+    warn "whiptail is not available; falling back to text prompts."
+  fi
+}
+
 is_valid_ipv4() {
   local ip=$1
   [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
@@ -91,14 +113,14 @@ prompt_secret() {
   printf '%s' "$value"
 }
 
-use_whiptail() {
-  [[ -t 0 && -t 1 ]] && command -v whiptail >/dev/null 2>&1
+use_ui() {
+  [[ -n "$UI_BIN" && -t 0 && -t 1 ]]
 }
 
 ui_input() {
   local title=$1 prompt=$2 default=$3
-  if use_whiptail; then
-    whiptail --backtitle "$BACKTITLE" \
+  if use_ui; then
+    "$UI_BIN" --backtitle "$BACKTITLE" \
       --title "$title" \
       --inputbox "$prompt" 10 74 "$default" \
       3>&1 1>&2 2>&3 || cancelled "$title"
@@ -109,8 +131,8 @@ ui_input() {
 
 ui_password() {
   local title=$1 prompt=$2
-  if use_whiptail; then
-    whiptail --backtitle "$BACKTITLE" \
+  if use_ui; then
+    "$UI_BIN" --backtitle "$BACKTITLE" \
       --title "$title" \
       --passwordbox "$prompt" 10 74 \
       3>&1 1>&2 2>&3 || cancelled "$title"
@@ -122,8 +144,8 @@ ui_password() {
 ui_menu() {
   local title=$1 prompt=$2 default=$3
   shift 3
-  if use_whiptail; then
-    whiptail --backtitle "$BACKTITLE" \
+  if use_ui; then
+    "$UI_BIN" --backtitle "$BACKTITLE" \
       --title "$title" \
       --default-item "$default" \
       --menu "$prompt" 18 76 9 "$@" \
@@ -156,8 +178,8 @@ ui_radiolist() {
     options+=("$tag" "$desc" "$state")
   done
 
-  if use_whiptail; then
-    whiptail --backtitle "$BACKTITLE" \
+  if use_ui; then
+    "$UI_BIN" --backtitle "$BACKTITLE" \
       --title "$title" \
       --radiolist "$prompt" 16 76 6 "${options[@]}" \
       3>&1 1>&2 2>&3 || cancelled "$title"
@@ -597,6 +619,7 @@ EOF
 main() {
   require_root
   require_commands
+  ensure_ui
   collect_inputs "$@"
   ensure_workdir
   ensure_provision_key
