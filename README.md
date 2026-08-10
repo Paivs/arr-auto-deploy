@@ -84,3 +84,23 @@ docker logs qbittorrent
 
 VPN/killswitch sera um incremento separado para evitar misturar provider,
 credenciais e roteamento com a criacao inicial da VM.
+
+## Retomar Bootstrap
+
+Se a VM ja foi criada, mas o bootstrap falhou ao baixar imagens Docker, rode
+novamente em modo `bootstrap`:
+
+```bash
+sudo ACTION=bootstrap VMID=120 VM_IP=192.168.1.50 ./arr-vm-docker-stack.sh
+```
+
+Use o mesmo `VMID`, IP, usuario cloud-init e `WORK_DIR` da execucao original.
+Por padrao, o `WORK_DIR` e:
+
+```text
+/var/lib/arr-vm-docker-stack
+```
+
+Esse modo nao recria a VM. Ele reutiliza a chave SSH de provisionamento, conecta
+na VM existente, regrava o compose e tenta baixar as imagens uma por vez com
+retry.
