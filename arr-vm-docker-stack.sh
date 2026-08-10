@@ -478,7 +478,7 @@ EOF
 }
 
 wait_for_ssh() {
-  msg "Waiting for SSH on ${SSH_CONNECT_IP}"
+  msg "Waiting for SSH at ssh://${VM_USER}@${SSH_CONNECT_IP}:22"
   local elapsed=0
   local timeout=$SSH_WAIT_TIMEOUT
   local last_error=""
@@ -489,10 +489,10 @@ wait_for_ssh() {
     if ((elapsed % 30 == 0)); then
       detected_ip="$(detect_guest_ipv4 || true)"
       if [[ -n "$detected_ip" && "$detected_ip" != "$SSH_CONNECT_IP" ]]; then
-        msg "Guest agent reports ${detected_ip}; trying that IP for SSH"
+        msg "Guest agent reports ${detected_ip}; trying ssh://${VM_USER}@${detected_ip}:22"
         SSH_CONNECT_IP="$detected_ip"
       else
-        msg "Still waiting for SSH (${elapsed}/${timeout}s)"
+        msg "Still waiting for ssh://${VM_USER}@${SSH_CONNECT_IP}:22 (${elapsed}/${timeout}s)"
       fi
     fi
     if ((elapsed >= timeout)); then
