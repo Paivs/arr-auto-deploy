@@ -9,6 +9,7 @@ IMAGE_FILE="${IMAGE_FILE:-${WORK_DIR}/debian-13-generic-amd64.qcow2}"
 PROVISION_KEY="${PROVISION_KEY:-${WORK_DIR}/arr-vm-provision}"
 SUMMARY_FILE="${SUMMARY_FILE:-${WORK_DIR}/summary.txt}"
 BACKTITLE="${BACKTITLE:-Proxmox VE Helper Scripts - ARR VM Docker Stack}"
+SSH_WAIT_TIMEOUT="${SSH_WAIT_TIMEOUT:-1200}"
 
 ACTION="${ACTION:-full}"
 VMID="${VMID:-}"
@@ -67,6 +68,7 @@ Environment overrides:
   VM_GATEWAY=192.168.1.1
   VM_CIDR=24
   ARR_TZ=America/Sao_Paulo
+  SSH_WAIT_TIMEOUT=1200
   IMAGE_URL=${IMAGE_URL}
 EOF
 }
@@ -445,15 +447,57 @@ ssh_base() {
     "${VM_USER}@${SSH_CONNECT_IP}" "$@"
 }
 
+detect_guest_ipv4() {
+  qm guest cmd "$VMID" network-get-interfaces 2>/dev/null \
+    | awk -F\" '/ip-address/ && $4 ~ /^[0-9]+\./ && $4 !~ /^127\./ {print $4; exit}'
+}
+
+ssh_failure_help() {
+  local last_error=$1 detected_ip=${2:-}
+  warn "SSH did not become ready for VM ${VMID}."
+  [[ -n "$detected_ip" ]] && warn "Guest agent reported IPv4: ${detected_ip}"
+  [[ -n "$last_error" ]] && warn "Last SSH error: ${last_error}"
+  cat >&2 <<EOF
+
+Check these items on the Proxmox node:
+  qm status ${VMID}
+  qm terminal ${VMID}
+
+Inside the VM console, verify:
+  cloud-init status --long
+  ip addr
+  systemctl status ssh
+
+When SSH works, resume without recreating the VM:
+  ACTION=bootstrap VMID=${VMID} VM_IP=${detected_ip:-${SSH_CONNECT_IP}} VM_USER=${VM_USER} bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Paivs/arr-auto-deploy/refs/heads/main/arr-vm-docker-stack.sh)"
+
+To wait longer next time:
+  SSH_WAIT_TIMEOUT=1800 bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Paivs/arr-auto-deploy/refs/heads/main/arr-vm-docker-stack.sh)"
+
+EOF
+}
+
 wait_for_ssh() {
   msg "Waiting for SSH on ${SSH_CONNECT_IP}"
   local elapsed=0
-  local timeout=600
-  until ssh_base "true" >/dev/null 2>&1; do
+  local timeout=$SSH_WAIT_TIMEOUT
+  local last_error=""
+  local detected_ip=""
+  until last_error="$(ssh_base "true" 2>&1 >/dev/null)"; do
     sleep 5
     elapsed=$((elapsed + 5))
+    if ((elapsed % 30 == 0)); then
+      detected_ip="$(detect_guest_ipv4 || true)"
+      if [[ -n "$detected_ip" && "$detected_ip" != "$SSH_CONNECT_IP" ]]; then
+        msg "Guest agent reports ${detected_ip}; trying that IP for SSH"
+        SSH_CONNECT_IP="$detected_ip"
+      else
+        msg "Still waiting for SSH (${elapsed}/${timeout}s)"
+      fi
+    fi
     if ((elapsed >= timeout)); then
-      die "Timed out waiting for SSH on ${SSH_CONNECT_IP}."
+      ssh_failure_help "$last_error" "$detected_ip"
+      die "Timed out waiting for SSH on ${SSH_CONNECT_IP} after ${timeout}s."
     fi
   done
   ok "SSH is ready"

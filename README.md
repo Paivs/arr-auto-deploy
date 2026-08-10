@@ -112,3 +112,23 @@ Por padrao, o `WORK_DIR` e:
 Esse modo nao recria a VM. Ele reutiliza a chave SSH de provisionamento, conecta
 na VM existente, regrava o compose e tenta baixar as imagens uma por vez com
 retry.
+
+## Timeout De SSH
+
+Depois de criar e iniciar a VM, o script espera SSH ficar disponivel. O timeout
+padrao e de 1200 segundos:
+
+```bash
+sudo SSH_WAIT_TIMEOUT=1800 ./arr-vm-docker-stack.sh
+```
+
+Se estourar timeout, confira no console da VM:
+
+```bash
+cloud-init status --long
+ip addr
+systemctl status ssh
+```
+
+Quando SSH estiver funcionando, retome com `ACTION=bootstrap` usando o VMID e IP
+reais da VM.
