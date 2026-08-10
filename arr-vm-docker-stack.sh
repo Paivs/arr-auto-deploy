@@ -522,20 +522,27 @@ wait_for_ssh() {
 
 bootstrap_arr_stack() {
   msg "Bootstrapping Docker and ARR stack inside the VM"
+  if ! ssh_base "sudo -n true" >/dev/null 2>&1; then
+    die "User ${VM_USER} cannot run passwordless sudo on ${SSH_CONNECT_IP}. Fix sudo access or recreate the VM."
+  fi
   ssh_base "sudo env ARR_ADMIN_USER='${VM_USER}' ARR_TZ='${ARR_TZ}' ARR_GATEWAY='${VM_GATEWAY}' bash -s" <<'REMOTE_BOOTSTRAP'
 set -eEo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
+step() { printf '==> [VM] %s\n' "$*"; }
 
 if command -v cloud-init >/dev/null 2>&1; then
+  step "Waiting for cloud-init"
   cloud-init status --wait >/dev/null || true
 fi
 
+step "Configuring APT IPv4 and Debian sources"
 cat >/etc/apt/apt.conf.d/99force-ipv4 <<'EOF'
 Acquire::ForceIPv4 "true";
 EOF
 
 if [[ -n "${ARR_GATEWAY:-}" ]]; then
+  step "Setting default gateway to ${ARR_GATEWAY}"
   default_dev="$(ip -o -4 addr show scope global | awk '{print $2; exit}')"
   if [[ -n "$default_dev" ]]; then
     ip route replace default via "$ARR_GATEWAY" dev "$default_dev"
@@ -558,6 +565,7 @@ if ! ip route get 1.1.1.1 >/dev/null 2>&1; then
   exit 1
 fi
 
+step "Replacing Debian cloud mirror sources when present"
 if grep -Rqs 'mirror+file:' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
   find /etc/apt/sources.list.d -type f \( -name '*.sources' -o -name '*.list' \) -print0 \
     | xargs -0 -r grep -l 'mirror+file:' \
@@ -582,12 +590,14 @@ Suites: trixie-security
 Components: main
 EOF
 
+step "Installing base packages"
 apt-get -o Acquire::ForceIPv4=true update
 apt-get -o Acquire::ForceIPv4=true install -y ca-certificates curl qemu-guest-agent
 install -m 0755 -d /etc/apt/keyrings
 curl -4 -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
 
+step "Adding Docker repository"
 cat >/etc/apt/sources.list.d/docker.sources <<EOF
 Types: deb
 URIs: https://download.docker.com/linux/debian
@@ -597,6 +607,7 @@ Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 
+step "Installing Docker Engine and Compose plugin"
 apt-get -o Acquire::ForceIPv4=true update
 apt-get -o Acquire::ForceIPv4=true install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable --now docker qemu-guest-agent
@@ -619,6 +630,7 @@ install -d -m 0755 -o "$ARR_ADMIN_USER" -g "$ARR_ADMIN_USER" \
   /data/configs/bazarr \
   /data/configs/qbittorrent
 
+step "Writing Docker Compose files"
 cat >/opt/arr/.env <<EOF
 PUID=${ARR_UID}
 PGID=${ARR_GID}
@@ -744,9 +756,11 @@ pull_with_retry() {
 }
 
 for service in prowlarr sonarr radarr lidarr bazarr qbittorrent; do
+  step "Pulling ${service}"
   pull_with_retry "$service"
 done
 
+step "Starting ARR stack"
 compose_as_user up -d
 compose_as_user ps
 REMOTE_BOOTSTRAP
