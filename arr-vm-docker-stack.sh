@@ -527,18 +527,19 @@ cat >/etc/apt/apt.conf.d/99force-ipv4 <<'EOF'
 Acquire::ForceIPv4 "true";
 EOF
 
-if grep -Rqs 'mirror+file:/etc/apt/mirrors' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+if grep -Rqs 'mirror+file:' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
   find /etc/apt/sources.list.d -type f \( -name '*.sources' -o -name '*.list' \) -print0 \
-    | xargs -0 -r grep -l 'mirror+file:/etc/apt/mirrors' \
+    | xargs -0 -r grep -l 'mirror+file:' \
     | while IFS= read -r source_file; do
       mv "$source_file" "${source_file}.disabled-by-arr-stack"
     done
 
-  if [[ -f /etc/apt/sources.list ]] && grep -q 'mirror+file:/etc/apt/mirrors' /etc/apt/sources.list; then
+  if [[ -f /etc/apt/sources.list ]] && grep -q 'mirror+file:' /etc/apt/sources.list; then
     mv /etc/apt/sources.list /etc/apt/sources.list.disabled-by-arr-stack
   fi
+fi
 
-  cat >/etc/apt/sources.list.d/debian-direct.sources <<EOF
+cat >/etc/apt/sources.list.d/debian-direct.sources <<EOF
 Types: deb
 URIs: http://deb.debian.org/debian
 Suites: trixie trixie-updates trixie-backports
@@ -549,7 +550,6 @@ URIs: http://security.debian.org/debian-security
 Suites: trixie-security
 Components: main
 EOF
-fi
 
 apt-get -o Acquire::ForceIPv4=true update
 apt-get -o Acquire::ForceIPv4=true install -y ca-certificates curl qemu-guest-agent
