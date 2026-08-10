@@ -441,6 +441,8 @@ ssh_base() {
   ssh \
     -i "$PROVISION_KEY" \
     -o BatchMode=yes \
+    -o IdentitiesOnly=yes \
+    -o PreferredAuthentications=publickey \
     -o StrictHostKeyChecking=accept-new \
     -o UserKnownHostsFile="${WORK_DIR}/known_hosts" \
     -o ConnectTimeout=5 \
@@ -468,6 +470,9 @@ Inside the VM console, verify:
   ip addr
   systemctl status ssh
 
+Manual SSH test:
+  ssh -i ${PROVISION_KEY} -o IdentitiesOnly=yes ${VM_USER}@${detected_ip:-${SSH_CONNECT_IP}}
+
 When SSH works, resume without recreating the VM:
   ACTION=bootstrap VMID=${VMID} VM_IP=${detected_ip:-${SSH_CONNECT_IP}} VM_USER=${VM_USER} bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Paivs/arr-auto-deploy/refs/heads/main/arr-vm-docker-stack.sh)"
 
@@ -484,6 +489,10 @@ wait_for_ssh() {
   local last_error=""
   local detected_ip=""
   until last_error="$(ssh_base "true" 2>&1 >/dev/null)"; do
+    if [[ "$last_error" == *"Permission denied"* ]]; then
+      ssh_failure_help "$last_error" "$detected_ip"
+      die "SSH key authentication failed for ${VM_USER}@${SSH_CONNECT_IP}."
+    fi
     sleep 5
     elapsed=$((elapsed + 5))
     if ((elapsed % 30 == 0)); then
